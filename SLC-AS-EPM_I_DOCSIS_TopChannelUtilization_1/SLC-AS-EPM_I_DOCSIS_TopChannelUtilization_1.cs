@@ -54,9 +54,10 @@ using Skyline.DataMiner.Net.Messages;
 using Skyline.DataMiner.Net.Trending;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 
-[GQIMetaData(Name = "Top Channel Utilization")]
+[GQIMetaData(Name = "Top OFDM Channel Utilization")]
 public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 {
 	private readonly GQIStringArgument frontEndElementArg = new GQIStringArgument("FE Element")
@@ -187,50 +188,31 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 			return;
 		}
 
-		var backendTable = GetTable(frontEndElement, 1200500, new List<string>
+		var ccapCollecttorTable = GetTable(frontEndElement, 1200000, new List<string>
 			{
-				"forceFullTable=true",
+				"forceFullTable=true;columns=1200002",
 			});
 
-		if (backendTable != null && backendTable.Any())
+		if (ccapCollecttorTable != null && ccapCollecttorTable.Any())
 		{
-			for (int i = 0; i < backendTable[0].Count(); i++)
+			for (int i = 0; i < ccapCollecttorTable[0].Count(); i++)
 			{
-				var key = Convert.ToString(backendTable[0][i].CellValue);
-				List<HelperPartialSettings[]> backendEntityTable = GetTable(key, entityBeTablePid, new List<string>
+				var ccapId = Convert.ToString(ccapCollecttorTable[1][i].CellValue);
+				var ccapIdArr = ccapId.Split('/');
+
+				var element = new GetElementByIDMessage(Convert.ToInt32(ccapIdArr[0]), Convert.ToInt32(ccapIdArr[1]));
+				var paramChange = (ElementInfoEventMessage)_dms.SendMessage(element);
+				var protocol = Convert.ToString(paramChange.Protocol);
+				if (protocol.Equals("CISCO CBR-8 CCAP Platform") || protocol.Equals("Harmonic CableOs"))
+				{
+					List<HelperPartialSettings[]> ccapEntityTable = GetTable(ccapId, entityCcapTablePid, new List<string>
 					{
-						String.Format("forceFullTable=true;columns={0},{1},{2}",entityBeTablePid+1, entityBeTablePid+2, entityBeTablePid+54),
+						String.Format("forceFullTable=true;columns={0}", entityCcapTablePid+2),
 					});
 
-				if (backendEntityTable == null || !backendEntityTable.Any() || backendEntityTable[0].Length == 0)
-					continue;
-
-				var ccapSgNameDict = backendEntityTable[3]
-					.Zip(backendEntityTable[2], (ccapId, sgName) => new { CcapId = Convert.ToString(ccapId.CellValue), SgName = Convert.ToString(sgName.CellValue) })
-					.Zip(backendEntityTable[0], (data, indexKey) => new { Data = data, Key = Convert.ToString(indexKey.CellValue) })
-					.GroupBy(x => x.Data.CcapId, x => new ServiceGroupHelper { Key = Convert.ToString(x.Key), ServiceGroupName = Convert.ToString(x.Data.SgName) })
-					.ToDictionary(
-						x => x.Key,
-						x => x.ToList());
-
-				foreach (var item in ccapSgNameDict)
-				{
-					var eId = item.Key.Split('/');
-					var element = new GetElementByIDMessage(Convert.ToInt32(eId[0]), Convert.ToInt32(eId[1]));
-					var paramChange = (ElementInfoEventMessage)_dms.SendMessage(element);
-					var protocol = Convert.ToString(paramChange.Protocol);
-					if (!protocol.Equals("CISCO CBR-8 CCAP Platform") && !protocol.Equals("Harmonic CableOs"))
-					{
-						continue;
-					}
-
-					List<HelperPartialSettings[]> ccapEntityTable = GetTable(item.Key, entityCcapTablePid, new List<string>
-						{
-							String.Format("forceFullTable=true;columns={0};trend=avg,{1}", entityCcapTablePid+2, columnPid),
-						});
-					var paramsToRequest = item.Value.Select(x => new ParameterIndexPair { ID = columnPid, Index = x.Key }).ToArray();
+					var paramsToRequest = ccapEntityTable[0].Select(x => new ParameterIndexPair { ID = columnPid, Index = Convert.ToString(x.CellValue) }).ToArray();
 					var keysToSelect = ccapEntityTable[0].Select(x => x.CellValue).ToArray();
-					CreateRowsDictionary(fibernodeDictionary, item.Key, ccapEntityTable, paramsToRequest, keysToSelect);
+					CreateRowsDictionary(fibernodeDictionary, ccapId, ccapEntityTable, paramsToRequest, keysToSelect);
 				}
 			}
 		}
@@ -254,12 +236,12 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 			.Select(z => z.AverageValue)
 			.DefaultIfEmpty(-1).Max(),
 		}).ToDictionary(x => x.Key, x => x.AverageTrendRecords);
+
 		var partitionKeys = new HashSet<string>(parameterPartitions.Select(p => p.Index));
 
 		foreach (var keyFn in partitionKeys)
 		{
 			var index = Array.IndexOf(keysToSelect, keyFn);
-
 			if (index != -1 && trendDictionary.TryGetValue(keyFn, out double peakUtilization))
 			{
 				fibernodeDictionary.Add(keyFn, new FiberNodeOverview
