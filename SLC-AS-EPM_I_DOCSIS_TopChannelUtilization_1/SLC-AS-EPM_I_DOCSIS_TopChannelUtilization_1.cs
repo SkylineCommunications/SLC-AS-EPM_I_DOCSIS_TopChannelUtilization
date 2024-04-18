@@ -48,14 +48,13 @@ DATE		VERSION		AUTHOR			COMMENTS
 03/04/2024	1.0.0.1		SSU, Skyline	Initial version
 ****************************************************************************
 */
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using Skyline.DataMiner.Analytics.GenericInterface;
 using Skyline.DataMiner.Net.Helper;
 using Skyline.DataMiner.Net.Messages;
 using Skyline.DataMiner.Net.Trending;
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 
 [GQIMetaData(Name = "Top OFDM Channel Utilization")]
 public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
@@ -66,11 +65,6 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 	};
 
 	private readonly GQIStringArgument columnPidArg = new GQIStringArgument("Column Requested PID")
-	{
-		IsRequired = true,
-	};
-
-	private readonly GQIStringArgument entityBeTablePidArg = new GQIStringArgument("BE Entity Table PID")
 	{
 		IsRequired = true,
 	};
@@ -93,7 +87,6 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 	private GQIDMS _dms;
 	private string frontEndElement = String.Empty;
 	private int columnPid = 0;
-	private int entityBeTablePid = 0;
 	private int entityCcapTablePid = 0;
 	private DateTime initialTime;
 	private DateTime finalTime;
@@ -122,7 +115,6 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 		{
 			frontEndElementArg,
 			columnPidArg,
-			entityBeTablePidArg,
 			entityCcapTablePidArg,
 			initialTimeArg,
 			finalTimeArg,
@@ -136,7 +128,6 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 		{
 			frontEndElement = args.GetArgumentValue(frontEndElementArg);
 			columnPid = Convert.ToInt32(args.GetArgumentValue(columnPidArg));
-			entityBeTablePid = Convert.ToInt32(args.GetArgumentValue(entityBeTablePidArg));
 			entityCcapTablePid = Convert.ToInt32(args.GetArgumentValue(entityCcapTablePidArg));
 			initialTime = args.GetArgumentValue(initialTimeArg);
 			finalTime = args.GetArgumentValue(finalTimeArg);
@@ -181,7 +172,7 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 		return columns;
 	}
 
-	public void GetServiceGroupsTables(Dictionary<string, FiberNodeOverview> fibernodeDictionary)
+	public void GetServiceGroupsTables(Dictionary<string, FiberNodeOverview> fiberNodeDictionary)
 	{
 		if (String.IsNullOrEmpty(frontEndElement))
 		{
@@ -212,12 +203,22 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 
 					var paramsToRequest = ccapEntityTable[0].Select(x => new ParameterIndexPair { ID = columnPid, Index = Convert.ToString(x.CellValue) }).ToArray();
 					var keysToSelect = ccapEntityTable[0].Select(x => x.CellValue).ToArray();
-					CreateRowsDictionary(fibernodeDictionary, ccapId, ccapEntityTable, paramsToRequest, keysToSelect);
+					CreateRowsDictionary(fiberNodeDictionary, ccapId, ccapEntityTable, paramsToRequest, keysToSelect);
 				}
 			}
 		}
 
 		return;
+	}
+
+	public string ParseDoubleValue(double doubleValue, string unit)
+	{
+		if (doubleValue.Equals(-1))
+		{
+			return "N/A";
+		}
+
+		return Math.Round(doubleValue, 2) + " " + unit;
 	}
 
 	private void CreateRowsDictionary(Dictionary<string, FiberNodeOverview> fibernodeDictionary, string key, List<HelperPartialSettings[]> entityTable, ParameterIndexPair[] parameterPartitions, object[] keysToSelect)
@@ -252,26 +253,6 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 				});
 			}
 		}
-	}
-
-	private List<ParameterIndexPair[]> GetKeysPartition(List<HelperPartialSettings[]> backendEntityTable)
-	{
-		int batchSize = 25;
-		var parameterIndexPairs = backendEntityTable[0].Select(cell => new ParameterIndexPair
-		{
-			ID = columnPid,
-			Index = Convert.ToString(cell.CellValue),
-		}).ToList();
-
-		List<ParameterIndexPair[]> parameterPartitions = new List<ParameterIndexPair[]>();
-		for (int startIndex = 0; startIndex < parameterIndexPairs.Count(); startIndex += batchSize)
-		{
-			int endIndex = Math.Min(startIndex + batchSize, parameterIndexPairs.Count());
-			ParameterIndexPair[] partition = parameterIndexPairs.Skip(startIndex).Take(endIndex - startIndex).ToArray();
-			parameterPartitions.Add(partition);
-		}
-
-		return parameterPartitions;
 	}
 
 	private void AddRows(Dictionary<string, FiberNodeOverview> rows)
@@ -332,21 +313,6 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 
 		return null;
 	}
-
-	public string ParseDoubleValue(double doubleValue, string unit)
-	{
-		if (doubleValue.Equals(-1))
-		{
-			return "N/A";
-		}
-
-		return Math.Round(doubleValue, 2) + " " + unit;
-	}
-}
-
-public class BackEndHelper
-{
-	public string ElementId { get; set; }
 }
 
 public class FiberNodeOverview
@@ -356,13 +322,6 @@ public class FiberNodeOverview
 	public string FiberNodeName { get; set; }
 
 	public double PeakUtilization { get; set; }
-}
-
-public class ServiceGroupHelper
-{
-	public string Key { get; set; }
-
-	public string ServiceGroupName { get; set; }
 }
 
 public class HelperPartialSettings
