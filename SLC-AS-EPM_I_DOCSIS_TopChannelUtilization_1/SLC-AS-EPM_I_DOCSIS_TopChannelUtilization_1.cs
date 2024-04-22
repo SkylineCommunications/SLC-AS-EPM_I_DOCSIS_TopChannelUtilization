@@ -51,6 +51,7 @@ DATE		VERSION		AUTHOR			COMMENTS
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Skyline.DataMiner.Analytics.GenericInterface;
 using Skyline.DataMiner.Net.Helper;
 using Skyline.DataMiner.Net.Messages;
@@ -84,6 +85,7 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 		IsRequired = false,
 	};
 
+	private readonly object dictionaryLock = new object();
 	private GQIDMS _dms;
 	private string frontEndElement = String.Empty;
 	private int columnPid = 0;
@@ -180,17 +182,16 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 		}
 
 		var ccapCollecttorTable = GetTable(frontEndElement, 1200000, new List<string>
-			{
-				"forceFullTable=true;columns=1200002",
-			});
+		{
+			"forceFullTable=true;columns=1200002",
+		});
 
 		if (ccapCollecttorTable != null && ccapCollecttorTable.Any())
 		{
-			for (int i = 0; i < ccapCollecttorTable[0].Count(); i++)
+			Parallel.For(0, ccapCollecttorTable[0].Count(), i =>
 			{
 				var ccapId = Convert.ToString(ccapCollecttorTable[1][i].CellValue);
 				var ccapIdArr = ccapId.Split('/');
-
 				var element = new GetElementByIDMessage(Convert.ToInt32(ccapIdArr[0]), Convert.ToInt32(ccapIdArr[1]));
 				var paramChange = (ElementInfoEventMessage)_dms.SendMessage(element);
 				var protocol = Convert.ToString(paramChange.Protocol);
@@ -198,17 +199,43 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 				{
 					List<HelperPartialSettings[]> ccapEntityTable = GetTable(ccapId, entityCcapTablePid, new List<string>
 					{
-						String.Format("forceFullTable=true;columns={0}", entityCcapTablePid+2),
+							String.Format("forceFullTable=true;columns={0}", entityCcapTablePid+2),
 					});
 
-					var paramsToRequest = ccapEntityTable[0].Select(x => new ParameterIndexPair { ID = columnPid, Index = Convert.ToString(x.CellValue) }).ToArray();
-					var keysToSelect = ccapEntityTable[0].Select(x => x.CellValue).ToArray();
-					CreateRowsDictionary(fiberNodeDictionary, ccapId, ccapEntityTable, paramsToRequest, keysToSelect);
+					if (ccapEntityTable != null && ccapEntityTable.Any())
+					{
+						var paramsToRequest = ccapEntityTable[0].Select(x => new ParameterIndexPair { ID = columnPid, Index = Convert.ToString(x.CellValue) }).ToArray();
+
+						List<ParameterIndexPair[]> parameterPartitions = GetKeysPartition(ccapEntityTable);
+						var keysToSelect = ccapEntityTable[0].Select(x => x.CellValue).ToArray();
+
+						CreateRowsDictionary(fiberNodeDictionary, ccapId, ccapEntityTable, parameterPartitions, keysToSelect);
+					}
 				}
-			}
+			});
 		}
 
 		return;
+	}
+
+	private List<ParameterIndexPair[]> GetKeysPartition(List<HelperPartialSettings[]> backendEntityTable)
+	{
+		int batchSize = 25;
+		var parameterIndexPairs = backendEntityTable[0].Select(cell => new ParameterIndexPair
+		{
+			ID = columnPid,
+			Index = Convert.ToString(cell.CellValue),
+		}).ToList();
+
+		List<ParameterIndexPair[]> parameterPartitions = new List<ParameterIndexPair[]>();
+		for (int startIndex = 0; startIndex < parameterIndexPairs.Count(); startIndex += batchSize)
+		{
+			int endIndex = Math.Min(startIndex + batchSize, parameterIndexPairs.Count());
+			ParameterIndexPair[] partition = parameterIndexPairs.Skip(startIndex).Take(endIndex - startIndex).ToArray();
+			parameterPartitions.Add(partition);
+		}
+
+		return parameterPartitions;
 	}
 
 	public string ParseDoubleValue(double doubleValue, string unit)
@@ -218,41 +245,41 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 			return "N/A";
 		}
 
-		return Math.Round(doubleValue, 2) + " " + unit;
+		return doubleValue.ToString("0.00") + " " + unit;
 	}
 
-	private void CreateRowsDictionary(Dictionary<string, FiberNodeOverview> fibernodeDictionary, string key, List<HelperPartialSettings[]> entityTable, ParameterIndexPair[] parameterPartitions, object[] keysToSelect)
+	private void CreateRowsDictionary(Dictionary<string, FiberNodeOverview> fibernodeDictionary, string key, List<HelperPartialSettings[]> entityTable, List<ParameterIndexPair[]> parameterPartitions, object[] keysToSelect)
 	{
-		GetTrendDataResponseMessage trendMessage = GetTrendMessage(key, parameterPartitions);
-		if (trendMessage == null || trendMessage.Records.IsNullOrEmpty())
+		Parallel.ForEach(parameterPartitions, partition =>
 		{
-			return;
-		}
-
-		Dictionary<string, double> trendDictionary = trendMessage.Records.Select(x => new
-		{
-			Key = x.Key.Substring(x.Key.IndexOf('/') + 1),
-			AverageTrendRecords = x.Value.Select(y => y as AverageTrendRecord)
-			.Where(z => z.Status == 5)
-			.Select(z => z.AverageValue)
-			.DefaultIfEmpty(-1).Max(),
-		}).ToDictionary(x => x.Key, x => x.AverageTrendRecords);
-
-		var partitionKeys = new HashSet<string>(parameterPartitions.Select(p => p.Index));
-
-		foreach (var keyFn in partitionKeys)
-		{
-			var index = Array.IndexOf(keysToSelect, keyFn);
-			if (index != -1 && trendDictionary.TryGetValue(keyFn, out double peakUtilization))
+			GetTrendDataResponseMessage trendMessage = GetTrendMessage(key, partition);
+			if (trendMessage == null || trendMessage.Records.IsNullOrEmpty())
 			{
-				fibernodeDictionary.Add(keyFn, new FiberNodeOverview
-				{
-					Key = keyFn,
-					FiberNodeName = Convert.ToString(entityTable[1][index].CellValue),
-					PeakUtilization = peakUtilization,
-				});
+				return;
 			}
-		}
+
+			foreach (var record in trendMessage.Records)
+			{
+				var keyFn = record.Key.Substring(record.Key.IndexOf('/') + 1);
+				var index = Array.IndexOf(keysToSelect, keyFn);
+
+				if (index != -1)
+				{
+					lock (dictionaryLock)
+					{
+						fibernodeDictionary[keyFn] = new FiberNodeOverview
+						{
+							Key = keyFn,
+							FiberNodeName = Convert.ToString(entityTable[1][index].CellValue),
+							PeakUtilization = record.Value
+								.Select(x => (x as AverageTrendRecord)?.AverageValue ?? -1)
+								.DefaultIfEmpty(-1)
+								.Max(),
+						};
+					}
+				}
+			}
+		});
 	}
 
 	private void AddRows(Dictionary<string, FiberNodeOverview> rows)
