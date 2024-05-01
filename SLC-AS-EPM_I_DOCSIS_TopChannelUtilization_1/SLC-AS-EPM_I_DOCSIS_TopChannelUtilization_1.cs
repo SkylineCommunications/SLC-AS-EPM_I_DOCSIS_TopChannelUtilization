@@ -201,7 +201,6 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 					{
 							String.Format("forceFullTable=true;columns={0}", entityCcapTablePid+2),
 					});
-
 					if (ccapEntityTable != null && ccapEntityTable.Any())
 					{
 						var paramsToRequest = ccapEntityTable[0].Select(x => new ParameterIndexPair { ID = columnPid, Index = Convert.ToString(x.CellValue) }).ToArray();
@@ -262,15 +261,16 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 			{
 				var keyFn = record.Key.Substring(record.Key.IndexOf('/') + 1);
 				var index = Array.IndexOf(keysToSelect, keyFn);
+				var fiberNodeName = Convert.ToString(entityTable[1][index].CellValue);
 
-				if (index != -1)
+				if (index != -1 && !String.IsNullOrEmpty(fiberNodeName))
 				{
 					lock (dictionaryLock)
 					{
 						fibernodeDictionary[keyFn] = new FiberNodeOverview
 						{
 							Key = keyFn,
-							FiberNodeName = Convert.ToString(entityTable[1][index].CellValue),
+							FiberNodeName = fiberNodeName,
 							PeakUtilization = record.Value
 								.Select(x => (x as AverageTrendRecord)?.AverageValue ?? -1)
 								.DefaultIfEmpty(-1)

@@ -19,6 +19,8 @@
 	<Script>
 		<Exe id="1" type="csharp">
 			<Value><![CDATA[[Project:SLC-AS-EPM_I_DOCSIS_TopChannelUtilization_1]]]></Value>
+			<Param type="preCompile">true</Param>
+			<Param type="libraryName">SLC-AS-EPM_I_DOCSIS_TopFiberNodeOFDMUtilization</Param>
 			<!--<Param type="debug">true</Param>-->
 			<Message></Message>
 		</Exe>
