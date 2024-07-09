@@ -266,7 +266,7 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
         var element = new GetElementByIDMessage(Convert.ToInt32(ccapIdArr[0]), Convert.ToInt32(ccapIdArr[1]));
         var paramChange = (ElementInfoEventMessage)_dms.SendMessage(element);
         var protocol = Convert.ToString(paramChange.Protocol);
-        if (protocol.Equals("CISCO CBR-8 CCAP Platform") || protocol.Equals("Harmonic CableOs"))
+        if (channelInformation == "US Channels" || protocol.Equals("CISCO CBR-8 CCAP Platform") || protocol.Equals("Harmonic CableOs"))
         {
             RetrieveTrendData(fiberNodeDictionary, filter, ccapId);
         }
