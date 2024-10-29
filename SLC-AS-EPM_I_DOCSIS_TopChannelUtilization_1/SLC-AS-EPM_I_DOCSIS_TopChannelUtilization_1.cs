@@ -50,6 +50,8 @@ DATE		VERSION		AUTHOR			COMMENTS
 */
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Text;
 using Skyline.DataMiner.Analytics.GenericInterface;
@@ -111,6 +113,7 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
                 new GQIStringColumn("Fiber Node"),
                 new GQIDoubleColumn("Low Split Utilization"),
                 new GQIDoubleColumn("High Split Utilization"),
+                new GQIDoubleColumn("OFDMA+LowSplitSCQAM Utilization"),
             };
         }
         else
@@ -173,7 +176,6 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
             else
             {
                 var fibernodeDictionary = new Dictionary<string, FiberNodeOverview>();
-
                 GetServiceGroupsTables(fibernodeDictionary, allCollectors[iterator]);
 
                 if (channelInformation == "US Channels")
@@ -266,6 +268,7 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
         var element = new GetElementByIDMessage(Convert.ToInt32(ccapIdArr[0]), Convert.ToInt32(ccapIdArr[1]));
         var paramChange = (ElementInfoEventMessage)_dms.SendMessage(element);
         var protocol = Convert.ToString(paramChange.Protocol);
+
         if (channelInformation == "US Channels" || protocol.Equals("CISCO CBR-8 CCAP Platform") || protocol.Equals("Harmonic CableOs"))
         {
             RetrieveTrendData(fiberNodeDictionary, filter, ccapId);
@@ -283,15 +286,51 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
         {
             List<ParameterIndexPair[]> parameterPartitions = GetKeysPartition(ccapEntityTable);
             var keysToSelect = ccapEntityTable[0].Select(x => x.CellValue).ToArray();
+
             if (channelInformation == "US Channels")
             {
-                CreateRowsUsDictionary(fiberNodeDictionary, ccapId, ccapEntityTable, parameterPartitions, keysToSelect);
+                var fiberNodeByTimestamp = GetOfdmaTrendDataFromCcapFiberNodeTable(ccapId);
+                CreateRowsUsDictionary(fiberNodeDictionary, ccapId, ccapEntityTable, parameterPartitions, keysToSelect, fiberNodeByTimestamp);
             }
             else
             {
                 CreateRowsDictionary(fiberNodeDictionary, ccapId, ccapEntityTable, parameterPartitions, keysToSelect);
             }
         }
+    }
+
+    private Dictionary<DateTime, Dictionary<string, FiberNodeRow>> GetOfdmaTrendDataFromCcapFiberNodeTable(string ccapId)
+    {
+        int serviceGroupTablePid = 4200;
+        int serviceGroupTableOfdmaUtilizationPid = 4214;
+        var fiberNodeByTimestamp = new Dictionary<DateTime, Dictionary<string, FiberNodeRow>>();
+        var timeRange = new TimeSpan(1, 0, 0);
+
+        string filter = String.Format("forceFullTable=true;columns={0}", serviceGroupTablePid + 2);
+
+        List<HelperPartialSettings[]> serviceGroupTable = GetTable(ccapId, serviceGroupTablePid, new List<string>
+        {
+            filter,
+        });
+
+        if (serviceGroupTable != null && serviceGroupTable.Any())
+        {
+            List<ParameterIndexPair[]> parameterPartitions = GetKeysPartition(serviceGroupTable, serviceGroupTableOfdmaUtilizationPid);
+            var keysToSelect = serviceGroupTable[0].Select(x => x.CellValue).ToArray();
+
+            for (DateTime i = initialTime; i < finalTime; i += timeRange)
+            {
+                var tempFiberNodes = GetTrendRangeDataForOfdma(ccapId, serviceGroupTable, parameterPartitions, keysToSelect, timeRange, i);
+                fiberNodeByTimestamp[i] = new Dictionary<string, FiberNodeRow>();
+
+                foreach (var fiberNode in tempFiberNodes)
+                {
+                    fiberNodeByTimestamp[i][fiberNode.Key] = fiberNode;
+                }
+            }
+        }
+
+        return fiberNodeByTimestamp;
     }
 
     private List<ParameterIndexPair[]> GetKeysPartition(List<HelperPartialSettings[]> backendEntityTable)
@@ -314,60 +353,149 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
         return parameterPartitions;
     }
 
-    public string ParseDoubleValue(double doubleValue, string unit)
+    private List<ParameterIndexPair[]> GetKeysPartition(List<HelperPartialSettings[]> backendEntityTable, int columnPid)
     {
-        if (doubleValue.Equals(-1))
+        int batchSize = 25;
+        var parameterIndexPairs = backendEntityTable[0].Select(cell => new ParameterIndexPair
         {
-            return "N/A";
+            ID = columnPid,
+            Index = Convert.ToString(cell.CellValue),
+        }).ToList();
+
+        List<ParameterIndexPair[]> parameterPartitions = new List<ParameterIndexPair[]>();
+        for (int startIndex = 0; startIndex < parameterIndexPairs.Count; startIndex += batchSize)
+        {
+            int endIndex = Math.Min(startIndex + batchSize, parameterIndexPairs.Count);
+            ParameterIndexPair[] partition = parameterIndexPairs.Skip(startIndex).Take(endIndex - startIndex).ToArray();
+            parameterPartitions.Add(partition);
         }
 
-        return doubleValue.ToString("0.00") + " " + unit;
+        return parameterPartitions;
     }
 
-    private void CreateRowsUsDictionary(Dictionary<string, FiberNodeOverview> fibernodeDictionary, string ccapId, List<HelperPartialSettings[]> entityTable, List<ParameterIndexPair[]> parameterPartitions, object[] keysToSelect)
+    private void CreateRowsUsDictionary(
+        Dictionary<string, FiberNodeOverview> fibernodeDictionary,
+        string ccapId,
+        List<HelperPartialSettings[]> entityTable,
+        List<ParameterIndexPair[]> parameterPartitions,
+        object[] keysToSelect,
+        Dictionary<DateTime, Dictionary<string, FiberNodeRow>> fiberNodesByTimestamps)
     {
         var timeRange = new TimeSpan(1, 0, 0);
+        var stopwatch = new Stopwatch();
+        stopwatch.Start();
 
         for (DateTime i = initialTime; i < finalTime; i += timeRange)
         {
             var tempChannels = GetTrendRangeData(ccapId, entityTable, parameterPartitions, keysToSelect, timeRange, i);
-
             var groupedChannels = tempChannels.GroupBy(x => x.FiberNodeId);
-            foreach (var fiberNodeChannels in groupedChannels)
+            Dictionary<string, FiberNodeRow> fiberNodesByTimestamp = new Dictionary<string, FiberNodeRow>();
+
+            if (fiberNodesByTimestamps.ContainsKey(i))
             {
-                var channels = fiberNodeChannels.ToList();
-                var lowSplits = channels.Where(x => x.Frequency < 65);
-                var highSplits = channels.Where(x => x.Frequency >= 65);
+                fiberNodesByTimestamp = fiberNodesByTimestamps[i];
+            }
 
-                var lowSplitUtilization = lowSplits.Any() ? lowSplits.Average(x => x.Utilization) : -1;
-                var highSplitUtilization = highSplits.Any() ? highSplits.Average(x => x.Utilization) : -1;
+            CalculateUtilizationSplits(fibernodeDictionary, groupedChannels, fiberNodesByTimestamp);
+        }
+    }
 
-                if (!fibernodeDictionary.ContainsKey(fiberNodeChannels.Key))
+    private void CalculateUtilizationSplits(Dictionary<string, FiberNodeOverview> fibernodeDictionary, IEnumerable<IGrouping<string, ChannelOverview>> groupedChannels, Dictionary<string, FiberNodeRow> fiberNodesByTimestamp)
+    {
+        foreach (var fiberNodeChannels in groupedChannels)
+        {
+            var channels = fiberNodeChannels.ToList();
+            var lowSplits = channels.Where(x => x.Frequency < 65);
+            var highSplits = channels.Where(x => x.Frequency >= 65);
+
+            var lowSplitUtilization = lowSplits.Any() ? lowSplits.Average(x => x.Utilization) : -1;
+            var highSplitUtilization = highSplits.Any() ? highSplits.Average(x => x.Utilization) : -1;
+
+            FiberNodeRow fiberNodeByTimestamp;
+            double lowSplitPlusOfdmaUtilization = -1;
+
+            if (fiberNodesByTimestamp.ContainsKey(fiberNodeChannels.Key))
+            {
+                fiberNodeByTimestamp = fiberNodesByTimestamp[fiberNodeChannels.Key];
+                lowSplitPlusOfdmaUtilization = fiberNodeByTimestamp.OfdmaUtilization < 0 ? -1 : fiberNodeByTimestamp.OfdmaUtilization + lowSplitUtilization;
+            }
+
+            if (!fibernodeDictionary.ContainsKey(fiberNodeChannels.Key))
+            {
+                fibernodeDictionary[fiberNodeChannels.Key] = new FiberNodeOverview
                 {
-                    fibernodeDictionary[fiberNodeChannels.Key] = new FiberNodeOverview
+                    Key = fiberNodeChannels.Key,
+                    FiberNodeName = channels[0].FiberNodeName,
+                    LowSplitUtilization = lowSplitUtilization,
+                    HighSplitUtilization = highSplitUtilization,
+                    LowSplitPlusOfdmaUtilization = lowSplitPlusOfdmaUtilization,
+                };
+            }
+            else if (fibernodeDictionary[fiberNodeChannels.Key].LowSplitUtilization < lowSplitUtilization && fibernodeDictionary[fiberNodeChannels.Key].HighSplitUtilization <= highSplitUtilization)
+            {
+                fibernodeDictionary[fiberNodeChannels.Key].LowSplitUtilization = lowSplitUtilization;
+                fibernodeDictionary[fiberNodeChannels.Key].HighSplitUtilization = highSplitUtilization;
+                CheckLowSplitPlusOfdmaIsLessThanOrEqual(fibernodeDictionary, fiberNodeChannels, lowSplitPlusOfdmaUtilization);
+            }
+            else if (fibernodeDictionary[fiberNodeChannels.Key].LowSplitPlusOfdmaUtilization <= lowSplitPlusOfdmaUtilization)
+            {
+                fibernodeDictionary[fiberNodeChannels.Key].LowSplitPlusOfdmaUtilization = lowSplitPlusOfdmaUtilization;
+            }
+            else
+            {
+                // Do nothing
+            }
+        }
+    }
+
+    private void CheckLowSplitPlusOfdmaIsLessThanOrEqual(Dictionary<string, FiberNodeOverview> fibernodeDictionary, IGrouping<string, ChannelOverview> fiberNodeChannels, double lowSplitPlusOfdmaUtilization)
+    {
+        if (fibernodeDictionary[fiberNodeChannels.Key].LowSplitPlusOfdmaUtilization <= lowSplitPlusOfdmaUtilization)
+        {
+            fibernodeDictionary[fiberNodeChannels.Key].LowSplitPlusOfdmaUtilization = lowSplitPlusOfdmaUtilization;
+        }
+    }
+
+    private List<FiberNodeRow> GetTrendRangeDataForOfdma(string ccapId, List<HelperPartialSettings[]> entityTable, List<ParameterIndexPair[]> parameterPartitions, object[] keysToSelect, TimeSpan timeRange, DateTime i)
+    {
+        var tempChannels = new List<FiberNodeRow>();
+
+        foreach (var partition in parameterPartitions)
+        {
+            GetTrendDataResponseMessage trendMessage = GetTrendMessage(ccapId, partition, i, i + timeRange);
+
+            if (trendMessage == null || trendMessage.Records.IsNullOrEmpty())
+            {
+                continue;
+            }
+
+            foreach (var record in trendMessage.Records)
+            {
+                var key = record.Key.Substring(record.Key.IndexOf('/') + 1);
+                var index = Array.IndexOf(keysToSelect, key);
+                var name = Convert.ToString(entityTable[1][index].CellValue);
+
+                if (index != -1 && !String.IsNullOrEmpty(name))
+                {
+                    lock (dictionaryLock)
                     {
-                        Key = fiberNodeChannels.Key,
-                        FiberNodeName = channels[0].FiberNodeName,
-                        LowSplitUtilization = lowSplitUtilization,
-                        HighSplitUtilization = highSplitUtilization,
-                    };
-                }
-                else if (fibernodeDictionary[fiberNodeChannels.Key].LowSplitUtilization < lowSplitUtilization && fibernodeDictionary[fiberNodeChannels.Key].HighSplitUtilization <= highSplitUtilization)
-                {
-                    fibernodeDictionary[fiberNodeChannels.Key] = new FiberNodeOverview
-                    {
-                        Key = fiberNodeChannels.Key,
-                        FiberNodeName = channels[0].FiberNodeName,
-                        LowSplitUtilization = lowSplitUtilization,
-                        HighSplitUtilization = highSplitUtilization,
-                    };
-                }
-                else
-                {
-                    // Do nothing
+                        var peak = record.Value
+                                .Select(x => (x as AverageTrendRecord)?.AverageValue ?? -1)
+                                .DefaultIfEmpty(-1)
+                                .Average();
+
+                        tempChannels.Add(new FiberNodeRow
+                        {
+                            Key = key,
+                            FiberNodeName = name,
+                            OfdmaUtilization = peak >= 0 ? peak : -1,
+                        });
+                    }
                 }
             }
         }
+
+        return tempChannels;
     }
 
     private List<ChannelOverview> GetTrendRangeData(string ccapId, List<HelperPartialSettings[]> entityTable, List<ParameterIndexPair[]> parameterPartitions, object[] keysToSelect, TimeSpan timeRange, DateTime i)
@@ -472,12 +600,17 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
                 new GQICell
                 {
                     Value = Convert.ToDouble(sg.Value.LowSplitUtilization),
-                    DisplayValue = ParseDoubleValue(sg.Value.LowSplitUtilization, "%"),
+                    DisplayValue = HelperMethods.ParseDoubleValue(sg.Value.LowSplitUtilization, "%"),
                 },
                 new GQICell
                 {
                     Value = Convert.ToDouble(sg.Value.HighSplitUtilization),
-                    DisplayValue = ParseDoubleValue(sg.Value.HighSplitUtilization, "%"),
+                    DisplayValue = HelperMethods.ParseDoubleValue(sg.Value.HighSplitUtilization, "%"),
+                },
+                new GQICell
+                {
+                    Value = Convert.ToDouble(sg.Value.LowSplitPlusOfdmaUtilization),
+                    DisplayValue = HelperMethods.ParseDoubleValue(sg.Value.LowSplitPlusOfdmaUtilization, "%"),
                 },
             };
 
@@ -504,7 +637,7 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
                 new GQICell
                 {
                     Value = Convert.ToDouble(sg.Value.PeakUtilization),
-                    DisplayValue = ParseDoubleValue(sg.Value.PeakUtilization, "%"),
+                    DisplayValue = HelperMethods.ParseDoubleValue(sg.Value.PeakUtilization, "%"),
                 },
             };
 
@@ -540,6 +673,15 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
     }
 }
 
+public class FiberNodeRow
+{
+    public string Key { get; set; }
+
+    public string FiberNodeName { get; set; }
+
+    public double OfdmaUtilization { get; set; }
+}
+
 public class FiberNodeOverview
 {
     public string Key { get; set; }
@@ -551,6 +693,8 @@ public class FiberNodeOverview
     public double HighSplitUtilization { get; set; }
 
     public double PeakUtilization { get; set; }
+
+    public double LowSplitPlusOfdmaUtilization { get; set; }
 }
 
 public class ChannelOverview
@@ -575,4 +719,17 @@ public class HelperPartialSettings
     public object DisplayValue { get; set; }
 
     public ParameterDisplayType DisplayType { get; set; }
+}
+
+public class HelperMethods
+{
+    public static string ParseDoubleValue(double doubleValue, string unit)
+    {
+        if (doubleValue.Equals(-1))
+        {
+            return "N/A";
+        }
+
+        return doubleValue.ToString("0.00") + " " + unit;
+    }
 }

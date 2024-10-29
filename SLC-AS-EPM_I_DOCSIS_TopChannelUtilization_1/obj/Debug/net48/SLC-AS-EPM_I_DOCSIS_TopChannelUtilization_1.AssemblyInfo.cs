@@ -15,7 +15,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyCopyrightAttribute("© Skyline Communications")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ebb0228030c49e2e1ba032aa7c17be7e47015ff6")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+f36f54024a76024bfd9ad8d550c8be3340682580")]
 [assembly: System.Reflection.AssemblyProductAttribute("SLC-AS-EPM_I_DOCSIS_TopChannelUtilization_1")]
 [assembly: System.Reflection.AssemblyTitleAttribute("SLC-AS-EPM_I_DOCSIS_TopChannelUtilization_1")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
