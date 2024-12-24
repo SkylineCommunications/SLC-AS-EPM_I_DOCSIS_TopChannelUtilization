@@ -417,7 +417,7 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
             if (fiberNodesByTimestamp.ContainsKey(fiberNodeChannels.Key))
             {
                 fiberNodeByTimestamp = fiberNodesByTimestamp[fiberNodeChannels.Key];
-                lowSplitPlusOfdmaUtilization = fiberNodeByTimestamp.OfdmaUtilization < 0 ? -1 : fiberNodeByTimestamp.OfdmaUtilization + lowSplitUtilization;
+                lowSplitPlusOfdmaUtilization = fiberNodeByTimestamp.OfdmaUtilization < 0 || highSplits.Any() ? -1 : fiberNodeByTimestamp.OfdmaUtilization + lowSplitUtilization;
             }
 
             if (!fibernodeDictionary.ContainsKey(fiberNodeChannels.Key))
@@ -468,7 +468,7 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
             {
                 continue;
             }
-
+             
             foreach (var record in trendMessage.Records)
             {
                 var key = record.Key.Substring(record.Key.IndexOf('/') + 1);
