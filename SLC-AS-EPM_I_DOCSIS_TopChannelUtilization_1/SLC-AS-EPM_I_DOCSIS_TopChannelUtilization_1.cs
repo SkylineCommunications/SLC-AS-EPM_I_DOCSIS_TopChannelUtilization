@@ -109,7 +109,7 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 
 	private Dictionary<string, List<string>> idsPerCollector = new Dictionary<string, List<string>>();
 
-	private StringBuilder stringBuilder = new StringBuilder();
+	private StringBuilder loggerBuilder = new StringBuilder();
 	private string sLogFilePath;
 
 	public OnInitOutputArgs OnInit(OnInitInputArgs args)
@@ -255,7 +255,7 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 				};
 			}
 
-			string collector = idsPerCollector.Any() ? idsPerCollector.First().Key : string.Empty;
+			string collector = idsPerCollector.First().Key;
 			List<string> idList = ProcessIdsPerCollector();
 
 			listGqiRows.Clear();
@@ -305,8 +305,8 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 		if (enableLogging)
 		{
 			string timestampedMessage = $"|{DateTime.Now:yyyy-MM-dd HH:mm:ss}|{message}";
-			stringBuilder.Append(timestampedMessage).AppendLine();
-			File.WriteAllText(sLogFilePath, Convert.ToString(stringBuilder));
+			loggerBuilder.Append(timestampedMessage).AppendLine();
+			File.WriteAllText(sLogFilePath, Convert.ToString(loggerBuilder));
 		}
 	}
 
@@ -340,12 +340,12 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 
 	public List<string> ProcessIdsPerCollector()
 	{
-		List<string> first100Entries = new List<string>();
+		List<string> first10Entries = new List<string>();
 		if (idsPerCollector.Count > 0)
 		{
 			var firstKvp = idsPerCollector.First();
 
-			first100Entries = firstKvp.Value.Take(10).ToList();
+			first10Entries = firstKvp.Value.Take(10).ToList();
 
 			if (firstKvp.Value.Count <= 10)
 			{
@@ -357,7 +357,7 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 			}
 		}
 
-		return first100Entries;
+		return first10Entries;
 	}
 
 	public List<string> GetAllCollectors()
