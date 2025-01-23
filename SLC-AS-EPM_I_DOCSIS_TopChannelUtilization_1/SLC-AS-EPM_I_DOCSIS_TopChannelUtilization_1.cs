@@ -212,30 +212,23 @@ public class MyDataSource : IGQIDataSource, IGQIInputArguments, IGQIOnInit
 		foreach (var collector in allCollectors)
 		{
 			string filter = String.Format("forceFullTable=true;columns={0}", serviceGroupTablePid + 1);
-			var ccapIdArr = collector.Split('/');
-			var element = new GetElementByIDMessage(Convert.ToInt32(ccapIdArr[0]), Convert.ToInt32(ccapIdArr[1]));
-			var paramChange = (ElementInfoEventMessage)_dms.SendMessage(element);
-			var protocol = Convert.ToString(paramChange.Protocol);
 
-			if (channelInformation == "US Channels" || protocol.Equals("CISCO CBR-8 CCAP Platform") || protocol.Equals("Harmonic CableOs"))
-			{
-				List<HelperPartialSettings[]> ccapEntityTable = GetTable(collector, serviceGroupTablePid, new List<string>
+			List<HelperPartialSettings[]> ccapEntityTable = GetTable(collector, serviceGroupTablePid, new List<string>
 				{
 					filter,
 				});
 
-				var parameterIndexPairs = ccapEntityTable[0].Select(cell => new ParameterIndexPair
-				{
-					ID = columnPid,
-					Index = Convert.ToString(cell.CellValue),
-				}).ToList();
+			var parameterIndexPairs = ccapEntityTable[0].Select(cell => new ParameterIndexPair
+			{
+				ID = columnPid,
+				Index = Convert.ToString(cell.CellValue),
+			}).ToList();
 
-				List<string> idList = parameterIndexPairs
-					.Select(pair => pair.Index)
-					.ToList();
+			List<string> idList = parameterIndexPairs
+				.Select(pair => pair.Index)
+				.ToList();
 
-				idsPerCollector.Add(collector, idList);
-			}
+			idsPerCollector.Add(collector, idList);
 		}
 
 		Log("[INFO]|GetFiberNodeTableIds|All Service Group IDs per collector collected");
